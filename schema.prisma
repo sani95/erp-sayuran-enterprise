@@ -1,0 +1,90 @@
+
+// ERP SAYURAN ENTERPRISE - PRISMA SCHEMA v1.0
+// Actual Cost Per Batch + FIFO + Double Entry
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id          Int     @id @default(autoincrement())
+  sku         String  @unique
+  name        String  // Daun Bawang Kecil, Daun Bawang Besar, Jagung Wrapping
+  type        String  // RAW, FINISHED_GOOD, CURAH, REJECT
+  packWeight  Float?  @map("pack_weight") // 0.85, 0.90
+  shrinkagePct Float  @default(3.00) @map("shrinkage_pct")
+  yieldPct    Float   @default(97.00) @map("yield_pct")
+  createdAt   DateTime @default(now()) @map("created_at")
+  @@map("products")
+}
+
+model Supplier {
+  id            Int     @id @default(autoincrement())
+  name          String  // Pare, Pacet
+  deductionPct  Float   @default(0) @map("deduction_pct")
+  deductionType String  @default("PERCENTAGE") @map("deduction_type")
+  score         Float?
+  isActive      Boolean @default(true) @map("is_active")
+  purchaseOrders PurchaseOrder[]
+  @@map("suppliers")
+}
+
+model PurchaseOrder {
+  id              Int      @id @default(autoincrement())
+  poNumber        String   @unique @map("po_number")
+  supplierId      Int      @map("supplier_id")
+  supplier        Supplier @relation(fields: [supplierId], references: [id])
+  status          String   // DRAFT, WAITING_APPROVAL, APPROVED, PARTIALLY_RECEIVED, COMPLETED, CANCELLED
+  totalWeightBeli Float?   @map("total_weight_beli")
+  totalHutang     Float?   @map("total_hutang")
+  createdBy       Int?     @map("created_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+  goodsReceipts   GoodsReceipt[]
+  @@map("purchase_orders")
+}
+
+model GoodsReceipt {
+  id                  Int      @id @default(autoincrement())
+  poId                Int      @map("po_id")
+  po                  PurchaseOrder @relation(fields: [poId], references: [id])
+  batchNumber         String   @unique @map("batch_number")
+  beratBeli           Float    @map("berat_beli")
+  potonganSupplierPct Float    @map("potongan_supplier_pct")
+  beratDiterima       Float    @map("berat_diterima") // Generated: beratBeli * (1 - potongan/100)
+  receivedAt          DateTime @default(now()) @map("received_at")
+  receivedBy          Int?     @map("received_by")
+  qcInspections       QcInspection[]
+  @@map("goods_receipts")
+}
+
+model StockMovement {
+  id            Int      @id @default(autoincrement())
+  batchNumber   String   @map("batch_number")
+  productId     Int      @map("product_id")
+  location      String   // GUDANG_MOJOKERTO, LAPAK_PORONG, WIP, REJECT
+  movementType  String   @map("movement_type") // IN, OUT, ADJUSTMENT, PRODUCTION_IN, PRODUCTION_OUT, DISTRIBUTION_OUT, DISTRIBUTION_IN, SALES_OUT
+  qtyIn         Float    @default(0) @map("qty_in")
+  qtyOut        Float    @default(0) @map("qty_out")
+  qtyBalance    Float?   @map("qty_balance")
+  hppPerUnit    Float?   @map("hpp_per_unit")
+  referenceId   String?  @map("reference_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  createdBy     Int?     @map("created_by")
+  @@index([productId, location, createdAt, batchNumber])
+  @@map("stock_movements")
+}
+
+model BatchCost {
+  id          Int      @id @default(autoincrement())
+  batchNumber String   @map("batch_number")
+  costType    String   @map("cost_type") // BAHAN_BAKU, PAYROLL_GUDANG, PAYROLL_LAPAK, UANG_MAKAN, TRANSPORT, DISTRIBUSI, OVERHEAD, KEMASAN
+  amount      Float
+  description String?
+  @@map("batch_costs")
+}
+
+// ... plus models for ProductionBatch, Distribution, Sales, Payables, Receivables, Payroll, Accounting

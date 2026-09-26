@@ -1,0 +1,244 @@
+
+openapi: 3.0.3
+info:
+  title: ERP Sayuran Enterprise API
+  version: 1.0.0
+  description: |
+    API untuk mengelola end-to-end distributor sayuran:
+    Petani -> Gudang Mojokerto -> Produksi Packing -> Distribusi -> Lapak Porong -> Penjualan
+    Fitur kunci: FIFO, Actual Cost Per Batch HPP, Double Entry, Traceability 100%
+servers:
+  - url: https://api.erp-sayuran.id/v1
+    description: Production
+  - url: http://localhost:3000/api/v1
+    description: Local
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Batch:
+      type: object
+      properties:
+        batch_number:
+          type: string
+          example: BATCH-20260926-PARE-001
+        supplier_id: {type: integer}
+        berat_beli: {type: number, example: 100}
+        potongan_pct: {type: number, example: 7}
+        berat_diterima: {type: number, example: 93}
+        status: {type: string, enum: [DRAFT, QC, PRODUKSI, READY, DISTRIBUSI, HABIS]}
+
+paths:
+  /auth/login:
+    post:
+      summary: Login multi role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: {type: string}
+                password: {type: string}
+      responses:
+        '200':
+          description: JWT + role
+
+  /purchase-orders:
+    get:
+      summary: List PO dengan status Draft, Waiting Approval, Approved, Partially Received, Completed
+      responses: {'200': {description: OK}}
+    post:
+      summary: Buat PO - output Hutang Supplier + Batch Awal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                supplier_id: {type: integer}
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      product_id: {type: integer}
+                      berat_beli: {type: number}
+                      harga_per_kg: {type: number}
+
+  /goods-receipts:
+    post:
+      summary: Penerimaan Gudang - Rumus PRD
+      description: "Berat Diterima = Berat Beli x (100% - Potongan Supplier). Auto create stock_movement IN + batch_number"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                po_id: {type: integer}
+                berat_beli_actual: {type: number}
+                potongan_supplier_pct: {type: number}
+                received_by: {type: integer}
+
+  /qc:
+    post:
+      summary: QC Grade A/B/C/Reject + Supplier Score
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                receipt_id: {type: integer}
+                grade_a_kg: {type: number}
+                grade_b_kg: {type: number}
+                grade_c_kg: {type: number}
+                reject_kg: {type: number}
+
+  /production:
+    post:
+      summary: Produksi & Packing - Hitung Yield 97% Penyusutan 3%
+      description: "Input Grade A -> Output = Input * 97% . Jumlah Pack = floor(Berat Output / pack_weight). Sisa jadi CURAH"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                batch_number: {type: string}
+                product_id: {type: integer}
+                berat_input: {type: number}
+
+  /batch-costs:
+    post:
+      summary: Tambah komponen HPP per batch
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                batch_number: {type: string}
+                cost_type: {type: string, enum: [BAHAN_BAKU, PAYROLL_GUDANG, PAYROLL_LAPAK, UANG_MAKAN, TRANSPORT, DISTRIBUSI, OVERHEAD, KEMASAN]}
+                amount: {type: number}
+                description: {type: string}
+
+  /hpp/{batch_number}:
+    get:
+      summary: Hitung HPP Actual Per Batch Realtime
+      description: "Total HPP Batch = SUM(batch_costs). HPP/kg = Total / Berat Jadi. HPP/pack = Total / Jumlah Pack. TIDAK BOLEH AVERAGE"
+      parameters:
+        - name: batch_number
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: HPP detail
+
+  /stock:
+    get:
+      summary: Stok Realtime FIFO per lokasi
+      parameters:
+        - name: location
+          in: query
+          schema: {type: string, enum: [GUDANG_MOJOKERTO, LAPAK_PORONG, WIP, REJECT]}
+        - name: product_id
+          in: query
+          schema: {type: integer}
+      responses:
+        '200': {description: "List batch ordered by created_at ASC (FIFO)"}
+  /stock/movements:
+    post:
+      summary: Semua perubahan stok wajib movement
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                batch_number: {type: string}
+                product_id: {type: integer}
+                location: {type: string}
+                movement_type: {type: string, enum: [IN, OUT, ADJUSTMENT, PRODUCTION_IN, PRODUCTION_OUT, DISTRIBUTION_OUT, DISTRIBUTION_IN, SALES_OUT]}
+                qty: {type: number}
+                hpp_per_unit: {type: number}
+
+  /distributions:
+    post:
+      summary: Gudang Mojokerto -> Lapak Porong
+      description: Status Draft, Picking, Loading, In Transit, Received, Completed. Auto stock_movement OUT Gudang + IN Lapak
+    get:
+      summary: Tracking distribusi
+
+  /sales:
+    post:
+      summary: Penjualan Tunai/Transfer/Kredit - Auto FIFO + Margin
+      description: "Ambil stok FIFO tertua, hitung Omzet, HPP, Margin, Piutang jika kredit"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customer_id: {type: integer}
+                location: {type: string, default: LAPAK_PORONG}
+                type: {type: string, enum: [TUNAI, TRANSFER, KREDIT]}
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      product_id: {type: integer}
+                      qty: {type: number}
+                      harga_jual: {type: number}
+
+  /payables:
+    get:
+      summary: Monitoring Hutang Supplier Realtime - Status Belum Jatuh Tempo, Jatuh Tempo, Sebagian Dibayar, Lunas
+  /receivables:
+    get:
+      summary: Monitoring Piutang Pelanggan Realtime
+
+  /payroll/attendance:
+    post:
+      summary: Absensi GPS + Selfie
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                employee_id: {type: integer}
+                gps_lat: {type: number}
+                gps_lng: {type: number}
+                selfie_base64: {type: string}
+
+  /accounting/journals:
+    get:
+      summary: Double Entry - Auto jurnal untuk Pembelian, Produksi, Distribusi, Penjualan, Payroll
+    post:
+      summary: Manual adjustment (butuh approval)
+
+  /dashboard/owner:
+    get:
+      summary: Realtime KPI Owner
+      responses:
+        '200':
+          description: Omzet Hari Ini, Laba Hari Ini, Laba Bulan Ini, Nilai Persediaan, HPP Rata-rata, Stok Gudang, Stok Lapak, Hutang, Piutang, Cash, Yield, Penyusutan, Kerugian, Margin Produk, Margin Batch
+  /reports/profit-loss:
+    get:
+      summary: Laba Rugi Realtime per produk & per batch
+  /reports/traceability/{batch_number}:
+    get:
+      summary: Tracking penuh 1kg dari petani sampai pelanggan akhir
+security:
+  - bearerAuth: []
